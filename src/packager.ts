@@ -4,15 +4,15 @@ import { DEFAULT_APP_DIR_NAME, installDependencies, log, getElectronVersion, rea
 import { all, executeFinally } from "./promise"
 import { EventEmitter } from "events"
 import { Promise as BluebirdPromise } from "bluebird"
-import { tsAwaiter } from "./awaiter"
-import { AppMetadata, InfoRetriever } from "./repositoryInfo"
-import { PackagerOptions, PlatformPackager, BuildInfo, DevMetadata } from "./platformPackager"
+import { InfoRetriever } from "./repositoryInfo"
+import { AppMetadata, Platform, DevMetadata } from "./metadata"
+import { PackagerOptions, PlatformPackager, BuildInfo } from "./platformPackager"
 import MacPackager from "./macPackager"
 import WinPackager from "./winPackager"
 import * as errorMessages from "./errorMessages"
 import * as util from "util"
 
-const __awaiter = tsAwaiter
+const __awaiter = require("./awaiter")
 Array.isArray(__awaiter)
 
 function addHandler(emitter: EventEmitter, event: string, handler: Function) {
@@ -20,9 +20,8 @@ function addHandler(emitter: EventEmitter, event: string, handler: Function) {
 }
 
 export class Packager implements BuildInfo {
-  projectDir: string
-
-  appDir: string
+  readonly projectDir: string
+  readonly appDir: string
 
   metadata: AppMetadata
   devMetadata: DevMetadata
@@ -31,7 +30,7 @@ export class Packager implements BuildInfo {
 
   electronVersion: string
 
-  eventEmitter = new EventEmitter()
+  readonly eventEmitter = new EventEmitter()
 
   //noinspection JSUnusedLocalSymbols
   constructor(public options: PackagerOptions, public repositoryInfo: InfoRetriever = null) {
@@ -39,7 +38,7 @@ export class Packager implements BuildInfo {
     this.appDir = this.computeAppDirectory()
   }
 
-  artifactCreated(handler: (path: string) => void): Packager {
+  artifactCreated(handler: (file: string, platform: Platform) => void): Packager {
     addHandler(this.eventEmitter, "artifactCreated", handler)
     return this
   }
@@ -52,7 +51,7 @@ export class Packager implements BuildInfo {
     const buildPackageFile = this.devPackageFile
     const appPackageFile = this.projectDir === this.appDir ? buildPackageFile : path.join(this.appDir, "package.json")
     const platforms = normalizePlatforms(this.options.platform)
-    await BluebirdPromise.all(Array.from(new Set([buildPackageFile, appPackageFile]), readPackageJson))
+    await BluebirdPromise.map(Array.from(new Set([buildPackageFile, appPackageFile])), readPackageJson)
       .then(result => {
         this.metadata = result[result.length - 1]
         this.devMetadata = result[0]
@@ -62,7 +61,7 @@ export class Packager implements BuildInfo {
       })
 
     const cleanupTasks: Array<() => Promise<any>> = []
-    return executeFinally(this.doBuild(platforms, cleanupTasks), error => all(cleanupTasks.map(it => it())))
+    return executeFinally(this.doBuild(platforms, cleanupTasks), () => all(cleanupTasks.map(it => it())))
   }
 
   private async doBuild(platforms: Array<string>, cleanupTasks: Array<() => Promise<any>>): Promise<any> {
@@ -73,7 +72,8 @@ export class Packager implements BuildInfo {
         await this.installAppDependencies(arch)
 
         const outDir = path.join(this.projectDir, "dist")
-        const appOutDir = path.join(outDir, this.metadata.name + "-" + platform + "-" + arch)
+        // electron-packager uses productName in the directory name
+        const appOutDir = path.join(outDir, helper.appName + "-" + platform + "-" + arch)
         await helper.pack(platform, outDir, appOutDir, arch)
         if (this.options.dist) {
           distTasks.push(helper.packageInDistributableFormat(outDir, appOutDir, arch))

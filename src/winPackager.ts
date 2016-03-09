@@ -1,17 +1,13 @@
 import { downloadCertificate } from "./codeSign"
 import { Promise as BluebirdPromise } from "bluebird"
-import { tsAwaiter } from "./awaiter"
 import { PlatformPackager, BuildInfo } from "./platformPackager"
+import { Platform } from "./metadata"
 import * as path from "path"
-import { Stats } from "fs"
 import { log } from "./util"
-import { deleteFile, stat, renameFile, copyFile } from "./promisifed-fs"
-import * as fse from "fs-extra"
+import { readFile, deleteFile, stat, rename, copy, emptyDir, Stats, writeFile } from "fs-extra-p"
 
-const __awaiter = tsAwaiter
+const __awaiter = require("./awaiter")
 Array.isArray(__awaiter)
-
-const emptyDir = BluebirdPromise.promisify(fse.emptyDir)
 
 export default class WinPackager extends PlatformPackager<any> {
   certFilePromise: Promise<string>
@@ -45,8 +41,8 @@ export default class WinPackager extends PlatformPackager<any> {
     }
   }
 
-  getBuildConfigurationKey() {
-    return "win"
+  protected get platform() {
+    return Platform.WINDOWS
   }
 
   pack(platform: string, outDir: string, appOutDir: string, arch: string): Promise<any> {
@@ -90,14 +86,14 @@ export default class WinPackager extends PlatformPackager<any> {
     const certificateFile = await this.certFilePromise
     const version = this.metadata.version
     const installerOutDir = this.computeDistOut(outDir, arch)
-    const appName = this.metadata.name
     const archSuffix = arch === "x64" ? "-x64" : ""
-    const installerExePath = path.join(installerOutDir, appName + "Setup-" + version + archSuffix + ".exe")
     const options = Object.assign({
       name: this.metadata.name,
+      productName: this.appName,
+      exe: this.appName + ".exe",
+      title: this.appName,
       appDirectory: appOutDir,
       outputDirectory: installerOutDir,
-      productName: appName,
       version: version,
       description: this.metadata.description,
       authors: this.metadata.author.name,
@@ -105,15 +101,18 @@ export default class WinPackager extends PlatformPackager<any> {
       setupIcon: path.join(this.buildResourcesDir, "icon.ico"),
       certificateFile: certificateFile,
       certificatePassword: this.options.cscKeyPassword,
-      fixUpPaths: false
+      fixUpPaths: false,
+      usePackageJson: false
     }, this.customDistOptions)
 
+    // we use metadata.name instead of appName because appName can contains unsafe chars
+    const installerExePath = path.join(installerOutDir, this.metadata.name + "Setup-" + version + archSuffix + ".exe")
     if (this.isNsis) {
       return await this.nsis(options, installerExePath)
     }
 
     try {
-      await require("electron-winstaller-temp-fork").createWindowsInstaller(options)
+      await require("electron-winstaller-fixed").createWindowsInstaller(options)
     }
     catch (e) {
       if (!e.message.includes("Unable to set icon")) {
@@ -134,22 +133,32 @@ export default class WinPackager extends PlatformPackager<any> {
       }
     }
 
-    const promises = [
-      renameFile(path.join(installerOutDir, "Setup.exe"), installerExePath)
+    const releasesFile = path.join(installerOutDir, "RELEASES")
+    const nupkgPathOriginal = this.metadata.name + "-" + version + "-full.nupkg"
+    const nupkgPathWithArch = this.metadata.name + "-" + version + archSuffix + "-full.nupkg"
+
+    async function changeFileNameInTheReleasesFile() {
+      const data = (await readFile(releasesFile, "utf8")).replace(new RegExp(" " + nupkgPathOriginal + " ", "g"), " " + nupkgPathWithArch + " ")
+      await writeFile(releasesFile, data)
+    }
+
+    await BluebirdPromise.all([
+      rename(path.join(installerOutDir, "Setup.exe"), installerExePath)
         .then(it => this.dispatchArtifactCreated(it)),
-      renameFile(path.join(installerOutDir, appName + "-" + version + "-full.nupkg"), path.join(installerOutDir, appName + "-" + version + archSuffix + "-full.nupkg"))
-        .then(it => this.dispatchArtifactCreated(it))
-    ]
-
-    if (arch === "x64") {
-      this.dispatchArtifactCreated(path.join(installerOutDir, "RELEASES"))
-    }
-    else {
-      promises.push(copyFile(path.join(installerOutDir, "RELEASES"), path.join(installerOutDir, "RELEASES-ia32"))
-        .then(it => this.dispatchArtifactCreated(it)))
-    }
-
-    return await BluebirdPromise.all(promises)
+      rename(path.join(installerOutDir, nupkgPathOriginal), path.join(installerOutDir, nupkgPathWithArch))
+        .then(it => this.dispatchArtifactCreated(it)),
+      changeFileNameInTheReleasesFile()
+        .then(() => {
+          if (arch === "x64") {
+            this.dispatchArtifactCreated(releasesFile)
+            return null
+          }
+          else {
+            return copy(releasesFile, path.join(installerOutDir, "RELEASES-ia32"))
+              .then(it => this.dispatchArtifactCreated(it))
+          }
+        }),
+    ])
   }
 
   private async nsis(options: any, installerFile: string) {
@@ -165,7 +174,7 @@ export default class WinPackager extends PlatformPackager<any> {
       copyAssetsToTmpFolder: false,
       config: {
         win: Object.assign({
-          title: options.name,
+          title: options.title,
           version: options.version,
           icon: options.setupIcon,
           publisher: options.authors,

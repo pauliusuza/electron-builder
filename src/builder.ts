@@ -3,12 +3,11 @@ import { PackagerOptions } from "./platformPackager"
 import { PublishOptions, Publisher, GitHubPublisher } from "./gitHubPublisher"
 import { executeFinally } from "./promise"
 import { Promise as BluebirdPromise } from "bluebird"
-import { tsAwaiter } from "./awaiter"
 import { InfoRetriever } from "./repositoryInfo"
 import { log } from "./util"
 
-const __awaiter = tsAwaiter
-Array.isArray(__awaiter)
+//noinspection JSUnusedLocalSymbols
+const __awaiter = require("./awaiter")
 
 export async function createPublisher(packager: Packager, options: BuildOptions, repoSlug: InfoRetriever, isPublishOptionGuessed: boolean = false): Promise<Publisher> {
   const info = await repoSlug.getInfo(packager)
@@ -28,9 +27,12 @@ export async function createPublisher(packager: Packager, options: BuildOptions,
 export interface BuildOptions extends PackagerOptions, PublishOptions {
 }
 
-export function build(options: BuildOptions = {}): Promise<any> {
+export async function build(options: BuildOptions = {}): Promise<void> {
   if (options.cscLink == null) {
     options.cscLink = process.env.CSC_LINK
+  }
+  if (options.csaLink == null) {
+    options.csaLink = process.env.CSA_LINK
   }
   if (options.cscKeyPassword == null) {
     options.cscKeyPassword = process.env.CSC_KEY_PASSWORD
@@ -74,25 +76,26 @@ export function build(options: BuildOptions = {}): Promise<any> {
   const packager = new Packager(options, repositoryInfo)
   if (options.publish != null && options.publish !== "never") {
     let publisher: BluebirdPromise<Publisher> = null
-    packager.artifactCreated(path => {
+    packager.artifactCreated((file, platform) => {
       if (publisher == null) {
         publisher = <BluebirdPromise<Publisher>>createPublisher(packager, options, repositoryInfo, isPublishOptionGuessed)
       }
 
       if (publisher != null) {
-        publisher.then(it => publishTasks.push(<BluebirdPromise<any>>it.upload(path)))
+        publisher.then(it => publishTasks.push(<BluebirdPromise<any>>it.upload(file)))
       }
     })
   }
-  return executeFinally(packager.build(), error => {
-    if (error == null) {
-      return Promise.all(publishTasks)
-    }
-    else {
+
+  await executeFinally(packager.build(), errorOccurred => {
+    if (errorOccurred) {
       for (let task of publishTasks) {
         task.cancel()
       }
-      return null
+      return BluebirdPromise.resolve(null)
+    }
+    else {
+      return BluebirdPromise.all(publishTasks)
     }
   })
 }

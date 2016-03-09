@@ -1,38 +1,10 @@
-import { tsAwaiter } from "./awaiter"
 import { fromUrl as parseRepositoryUrl, Info } from "hosted-git-info"
 import { readText } from "./promisifed-fs"
+import { AppMetadata, Metadata } from "./metadata"
 import * as path from "path"
 
-const __awaiter = tsAwaiter
+const __awaiter = require("./awaiter")
 Array.isArray(__awaiter)
-
-export interface RepositoryInfo {
-  url: string
-}
-
-export interface Metadata {
-  repository: string | RepositoryInfo
-}
-
-export interface MetadataAuthor {
-  name: string
-  email: string
-}
-
-export interface AppMetadata extends Metadata {
-  version: string
-  name: string
-  description: string
-  author: MetadataAuthor
-
-  build: BuildMetadata
-
-  windowsPackager: any
-}
-
-export interface BuildMetadata {
-  iconUrl: string
-}
 
 export interface ProjectMetadataProvider {
   metadata: AppMetadata
@@ -47,7 +19,7 @@ export interface RepositorySlug {
 export class InfoRetriever {
   _info: Promise<Info>
 
-  getInfo(provider: ProjectMetadataProvider): Promise<Info> {
+  getInfo(provider?: ProjectMetadataProvider): Promise<Info> {
     if (this._info == null) {
       this._info = getInfo(provider)
     }
@@ -83,8 +55,8 @@ async function getGitUrlFromGitConfig(): Promise<string> {
   return null
 }
 
-async function getInfo(provider: ProjectMetadataProvider): Promise<RepositorySlug> {
-  const repo = provider.devMetadata.repository || provider.metadata.repository
+async function getInfo(provider?: ProjectMetadataProvider): Promise<RepositorySlug> {
+  const repo = provider == null ? null : (provider.devMetadata.repository || provider.metadata.repository)
   if (repo == null) {
     let url = process.env.TRAVIS_REPO_SLUG
     if (url == null) {
